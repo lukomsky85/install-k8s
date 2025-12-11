@@ -119,13 +119,25 @@ EOF
 install_kubernetes_tools() {
     print_step "Установка Kubernetes инструментов..."
     
-    # Add Kubernetes repository
-    curl -s https://packages.cloud.google.com/apt/doc/apt-key.gpg | apt-key add -
-    echo "deb https://apt.kubernetes.io/ kubernetes-xenial main" | tee /etc/apt/sources.list.d/kubernetes.list
-    
-    apt update
-    apt install -y kubelet=${K8S_VERSION}-00 kubeadm=${K8S_VERSION}-00 kubectl=${K8S_VERSION}-00
-    apt-mark hold kubelet kubeadm kubectl
+    # 1. Удаляем старый ключ и репозиторий, если они есть (чтобы избежать конфликтов)
+    sudo rm -f /etc/apt/sources.list.d/kubernetes.list
+    sudo rm -f /usr/share/keyrings/kubernetes-archive-keyring.gpg 2>/dev/null
+
+    # 2. Скачиваем новый ключ и настраиваем репозиторий по НОВОЙ официальной схеме
+    # Устанавливаем необходимые зависимости
+    sudo apt-get install -y apt-transport-https ca-certificates curl gpg
+
+    # Скачиваем ключ и помещаем его в trusted keyring
+    # ВАЖНО: v${K8S_VERSION%.*} превратит "1.28.0" в "v1.28"
+    curl -fsSL "https://pkgs.k8s.io/core:/stable:/v${K8S_VERSION%.*}/deb/Release.key" | sudo gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+
+    # Добавляем новый репозиторий.
+    echo "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v${K8S_VERSION%.*}/deb/ /" | sudo tee /etc/apt/sources.list.d/kubernetes.list
+
+    # 3. Устанавливаем пакеты
+    sudo apt-get update
+    sudo apt-get install -y kubelet=${K8S_VERSION}-00 kubeadm=${K8S_VERSION}-00 kubectl=${K8S_VERSION}-00
+    sudo apt-mark hold kubelet kubeadm kubectl
 }
 
 init_master_node() {
@@ -225,15 +237,15 @@ verify_installation() {
     echo "Node Type: $(if $MASTER_NODE; then echo "Master"; else echo "Worker"; fi)"
     
     echo -e "\n${GREEN}=== ПРОВЕРКА СЕРВИСОВ ===${NC}"
-    systemctl status kubelet --no-pager | grep -A 3 "Active:"
+    systemctl status kubelet --no-pager | grep -A 3 "Active:" || echo "Сервис kubelet не найден"
     
     if $MASTER_NODE; then
         echo -e "\n${GREEN}=== ПРОВЕРКА КЛАСТЕРА ===${NC}"
-        kubectl cluster-info
+        kubectl cluster-info 2>/dev/null || echo "kubectl не может подключиться к кластеру"
         echo -e "\n${GREEN}=== СОСТОЯНИЕ УЗЛОВ ===${NC}"
-        kubectl get nodes
+        kubectl get nodes 2>/dev/null || echo "Не удалось получить список узлов"
         echo -e "\n${GREEN}=== СОСТОЯНИЕ PODS В СИСТЕМНЫХ NAMESPACE ===${NC}"
-        kubectl get pods -n kube-system
+        kubectl get pods -n kube-system 2>/dev/null || echo "Не удалось получить список pods"
     fi
 }
 
@@ -241,10 +253,10 @@ cleanup() {
     print_step "Очистка в случае ошибки..."
     
     if $MASTER_NODE; then
-        kubeadm reset -f
+        kubeadm reset -f 2>/dev/null || true
     fi
     
-    apt remove -y kubelet kubeadm kubectl
+    apt remove -y kubelet kubeadm kubectl 2>/dev/null || true
     apt autoremove -y
     
     rm -rf /etc/kubernetes
